@@ -1,0 +1,23 @@
+{
+  "name": "@octri/node",
+  "version": "0.0.0",
+  "description": "Server-side error monitoring for Node backends (Express + Fastify). Reports backend errors to your Octri monitoring project and links them to client SDK errors via W3C trace context.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "require": "./dist/index.js" },
+    "./express": { "types": "./dist/express.d.ts", "import": "./dist/express.js", "require": "./dist/express.js" },
+    "./fastify": { "types": "./dist/fastify.d.ts", "import": "./dist/fastify.js", "require": "./dist/fastify.js" }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
