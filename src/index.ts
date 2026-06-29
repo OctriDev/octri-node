@@ -29,6 +29,11 @@ export function init(cfg: OctriConfig): void {
 
 const randomHex = (bytes: number): string => randomBytes(bytes).toString("hex");
 
+/** A fresh 64-bit span id (16 hex chars), for a span this service produces. */
+export function newSpanId(): string {
+  return randomHex(8);
+}
+
 // ── Trace context (W3C) ────────────────────────────────────────────────────────
 
 export interface TraceContext {
@@ -167,5 +172,40 @@ export function captureError(error: unknown, options: CaptureOptions = {}): void
     body: JSON.stringify(payload),
   }).catch(() => {
     // A logging failure must never mask the originating error.
+  });
+}
+
+// ── Spans (request waterfall) ────────────────────────────────────────────────
+
+export interface SpanInput {
+  traceId: string;
+  /** This span's id. */
+  spanId: string;
+  /** The caller's span id — the client request that triggered this one. */
+  parentSpanId?: string;
+  name: string;
+  service?: string;
+  operationId?: string;
+  /** ISO timestamps. */
+  startTime: string;
+  endTime?: string;
+  status?: "ok" | "error";
+}
+
+/**
+ * Reports one span to the monitoring trace store (fire-and-forget). Spans sharing
+ * a `traceId` form the request waterfall — the client SDK span (root) and this
+ * server span (its child) line up under one trace in the dashboard.
+ */
+export function captureSpan(span: SpanInput): void {
+  if (config === null) return;
+  const cfg = config;
+  const body: Record<string, unknown> = { service: "server", ...span };
+  void fetch(`${cfg.url}/traces`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${cfg.token}` },
+    body: JSON.stringify(body),
+  }).catch(() => {
+    // Span reporting must never affect the request.
   });
 }

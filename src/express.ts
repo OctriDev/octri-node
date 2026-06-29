@@ -1,4 +1,4 @@
-import { captureError, traceFromHeader } from "./index";
+import { captureError, captureSpan, newSpanId, traceFromHeader } from "./index";
 
 // Minimal structural types so the package needn't depend on Express.
 interface ReqLike {
@@ -9,6 +9,7 @@ interface ReqLike {
 }
 interface ResLike {
   statusCode?: number;
+  on?: (event: string, listener: () => void) => void;
 }
 
 /**
@@ -22,6 +23,41 @@ interface ResLike {
  * It reports the error (linked to the client by the incoming `traceparent`) and
  * re-throws via `next(err)` so your own error handling still runs.
  */
+/**
+ * Express request-timing middleware. Mount it FIRST, before your routes:
+ *
+ *   import { octriMiddleware } from "@octri/node/express";
+ *   app.use(octriMiddleware());
+ *
+ * It times each request and reports a server span (a child of the client SDK's
+ * span via the incoming `traceparent`), so the dashboard can draw the request
+ * waterfall. Pair it with `octriErrorHandler()` mounted after your routes.
+ */
+export function octriMiddleware() {
+  return (req: ReqLike, res: ResLike, next: (e?: unknown) => void): void => {
+    try {
+      const trace = traceFromHeader(req.headers.traceparent);
+      const spanId = newSpanId();
+      const startTime = new Date().toISOString();
+      res.on?.("finish", () => {
+        captureSpan({
+          traceId: trace.traceId,
+          spanId,
+          parentSpanId: trace.parentSpanId,
+          name: `${req.method ?? "GET"} ${req.originalUrl ?? req.url ?? ""}`.trim(),
+          service: "server",
+          startTime,
+          endTime: new Date().toISOString(),
+          status: typeof res.statusCode === "number" && res.statusCode >= 500 ? "error" : "ok",
+        });
+      });
+    } catch {
+      // Never let monitoring break the request.
+    }
+    next();
+  };
+}
+
 export function octriErrorHandler() {
   return (err: unknown, req: ReqLike, res: ResLike, next: (e?: unknown) => void): void => {
     try {
