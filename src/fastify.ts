@@ -1,4 +1,11 @@
-import { captureError, captureSpan, newSpanId, traceFromHeader, type TraceContext } from "./index";
+import {
+  captureError,
+  captureSpan,
+  newSpanId,
+  runWithSpanContext,
+  traceFromHeader,
+  type TraceContext,
+} from "./index";
 
 // Minimal structural types so the package needn't depend on Fastify.
 interface RequestLike {
@@ -35,16 +42,20 @@ const pending = new WeakMap<RequestLike, { start: string; spanId: string; trace:
  */
 export function octriFastify(fastify: FastifyLike, _opts: unknown, done: () => void): void {
   fastify.addHook("onRequest", (request, _reply, hookDone) => {
+    let context: { traceId: string; spanId: string } | null = null;
     try {
-      pending.set(request, {
-        start: new Date().toISOString(),
-        spanId: newSpanId(),
-        trace: traceFromHeader(request.headers?.traceparent),
-      });
+      const spanId = newSpanId();
+      const trace = traceFromHeader(request.headers?.traceparent);
+      pending.set(request, { start: new Date().toISOString(), spanId, trace });
+      context = { traceId: trace.traceId, spanId };
     } catch {
       // Never let monitoring break the request.
     }
-    hookDone();
+    // Continuing inside the span context lets route handlers open sub-spans
+    // (startSpan / withSpan) that nest under this request's server span — the
+    // async context propagates through Fastify's lifecycle.
+    if (context !== null) runWithSpanContext(context, hookDone);
+    else hookDone();
   });
 
   fastify.addHook("onResponse", (request, reply, hookDone) => {

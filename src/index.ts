@@ -5,6 +5,7 @@
 // to the client SDK error for the same request via the W3C `traceparent` header
 // — so the dashboard shows the full client → server stack under one trace.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -208,4 +209,111 @@ export function captureSpan(span: SpanInput): void {
   }).catch(() => {
     // Span reporting must never affect the request.
   });
+}
+
+// ── Sub-spans (where time goes inside a request) ─────────────────────────────
+// The active span for the running request, propagated through async work so a
+// `startSpan`/`withSpan` call nests under it (and under any enclosing sub-span).
+
+interface SpanContext {
+  traceId: string;
+  spanId: string;
+}
+
+const requestContext = new AsyncLocalStorage<SpanContext>();
+
+/** Runs `fn` with `ctx` as the active span — used by the request middleware. */
+export function runWithSpanContext<T>(ctx: SpanContext, fn: () => T): T {
+  return requestContext.run(ctx, fn);
+}
+
+/** The active span for the running request, or undefined outside one. */
+export function currentSpanContext(): SpanContext | undefined {
+  return requestContext.getStore();
+}
+
+export interface SpanOptions {
+  /** A category for color-coding the waterfall, e.g. "db", "cache", "http". */
+  op?: string;
+}
+
+export interface SpanHandle {
+  /** Closes the span and reports it. */
+  end(status?: "ok" | "error"): void;
+}
+
+/**
+ * Opens a sub-span under the active request span; call `.end()` when the work
+ * finishes. No-op (a stub handle) outside a request or before `init()`.
+ *
+ *   const span = startSpan("users.findById", { op: "db" });
+ *   const user = await db.user.find(id);
+ *   span.end();
+ */
+export function startSpan(name: string, options: SpanOptions = {}): SpanHandle {
+  const ctx = requestContext.getStore();
+  if (config === null || ctx === undefined) {
+    return {
+      end() {
+        /* no active request span — nothing to report */
+      },
+    };
+  }
+  const spanId = newSpanId();
+  const startTime = new Date().toISOString();
+  let ended = false;
+  return {
+    end(status: "ok" | "error" = "ok") {
+      if (ended) return;
+      ended = true;
+      captureSpan({
+        traceId: ctx.traceId,
+        spanId,
+        parentSpanId: ctx.spanId,
+        name,
+        service: options.op ?? "server",
+        startTime,
+        endTime: new Date().toISOString(),
+        status,
+      });
+    },
+  };
+}
+
+/**
+ * Times `fn` as a sub-span under the active request span. Nested `withSpan`
+ * calls nest correctly. Reports "error" status if `fn` throws (and re-throws).
+ *
+ *   const rows = await withSpan("orders.list", () => db.query(sql), { op: "db" });
+ */
+export async function withSpan<T>(
+  name: string,
+  fn: () => Promise<T> | T,
+  options: SpanOptions = {},
+): Promise<T> {
+  const ctx = requestContext.getStore();
+  if (config === null || ctx === undefined) return await fn();
+  const spanId = newSpanId();
+  const startTime = new Date().toISOString();
+  const child: SpanContext = { traceId: ctx.traceId, spanId };
+  const report = (status: "ok" | "error"): void =>
+    captureSpan({
+      traceId: ctx.traceId,
+      spanId,
+      parentSpanId: ctx.spanId,
+      name,
+      service: options.op ?? "server",
+      startTime,
+      endTime: new Date().toISOString(),
+      status,
+    });
+  try {
+    // Run within the child context so nested sub-spans parent to this one.
+    const result = await requestContext.run(child, fn);
+    report("ok");
+    return result;
+  } catch (error) {
+    report("error");
+    throw error;
+  }
 }

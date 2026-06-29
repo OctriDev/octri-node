@@ -1,4 +1,4 @@
-import { captureError, captureSpan, newSpanId, traceFromHeader } from "./index";
+import { captureError, captureSpan, newSpanId, runWithSpanContext, traceFromHeader } from "./index";
 
 // Minimal structural types so the package needn't depend on Express.
 interface ReqLike {
@@ -35,10 +35,12 @@ interface ResLike {
  */
 export function octriMiddleware() {
   return (req: ReqLike, res: ResLike, next: (e?: unknown) => void): void => {
+    let context: { traceId: string; spanId: string } | null = null;
     try {
       const trace = traceFromHeader(req.headers.traceparent);
       const spanId = newSpanId();
       const startTime = new Date().toISOString();
+      context = { traceId: trace.traceId, spanId };
       res.on?.("finish", () => {
         captureSpan({
           traceId: trace.traceId,
@@ -54,7 +56,10 @@ export function octriMiddleware() {
     } catch {
       // Never let monitoring break the request.
     }
-    next();
+    // Run downstream within the span context so handlers can open sub-spans
+    // (startSpan / withSpan) that nest under this request's server span.
+    if (context !== null) runWithSpanContext(context, () => next());
+    else next();
   };
 }
 
