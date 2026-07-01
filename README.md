@@ -49,6 +49,40 @@ captureError(err, {
 });
 ```
 
+## Spans & the request waterfall
+
+The middleware times each request as a span. To see where time goes inside it,
+either let Octri instrument common I/O automatically, or open spans yourself.
+
+### Automatic
+
+```ts
+import { autoInstrument, instrument } from "@octri/node";
+
+autoInstrument();                          // traces every outbound `fetch`, and
+                                           // pg / mysql2 / ioredis if installed
+instrument(pool, ["query"], { op: "db" }); // your own client / util module, once
+instrument(cache, ["get", "set"], { op: "cache" });
+```
+
+Every call to an instrumented method (and every `fetch`) becomes a sub-span under
+the current request — no per-call code. Calls to your monitoring backend are
+never traced (no feedback loop).
+
+### Manual
+
+```ts
+import { withSpan, startSpan } from "@octri/node";
+
+const rows = await withSpan("orders.list", () => db.query(sql), { op: "db" });
+
+const span = startSpan("render", { op: "view" });
+// ...work...
+span.finish();
+```
+
+`op` ("db", "cache", "http", …) colour-codes the bar in the dashboard waterfall.
+
 ## How the linking works
 
 Your generated client SDK sends a `traceparent: 00-<traceId>-<spanId>-01` header

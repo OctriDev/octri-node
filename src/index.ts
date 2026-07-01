@@ -239,22 +239,22 @@ export interface SpanOptions {
 
 export interface SpanHandle {
   /** Closes the span and reports it. */
-  end(status?: "ok" | "error"): void;
+  finish(status?: "ok" | "error"): void;
 }
 
 /**
- * Opens a sub-span under the active request span; call `.end()` when the work
+ * Opens a sub-span under the active request span; call `.finish()` when the work
  * finishes. No-op (a stub handle) outside a request or before `init()`.
  *
  *   const span = startSpan("users.findById", { op: "db" });
  *   const user = await db.user.find(id);
- *   span.end();
+ *   span.finish();
  */
 export function startSpan(name: string, options: SpanOptions = {}): SpanHandle {
   const ctx = requestContext.getStore();
   if (config === null || ctx === undefined) {
     return {
-      end() {
+      finish() {
         /* no active request span — nothing to report */
       },
     };
@@ -263,7 +263,7 @@ export function startSpan(name: string, options: SpanOptions = {}): SpanHandle {
   const startTime = new Date().toISOString();
   let ended = false;
   return {
-    end(status: "ok" | "error" = "ok") {
+    finish(status: "ok" | "error" = "ok") {
       if (ended) return;
       ended = true;
       captureSpan({
@@ -291,8 +291,16 @@ export async function withSpan<T>(
   fn: () => Promise<T> | T,
   options: SpanOptions = {},
 ): Promise<T> {
+  return await runSpan(name, options.op, fn);
+}
+
+// Core span wrapper used by withSpan + the auto-instrumentation. Runs `invoke`
+// within a child span context (so nested spans parent correctly) and reports the
+// span when it settles — synchronously for sync calls, on the promise for async
+// ones (so it never forces a sync function to become async).
+function runSpan<T>(name: string, op: string | undefined, invoke: () => T): T {
   const ctx = requestContext.getStore();
-  if (config === null || ctx === undefined) return await fn();
+  if (config === null || ctx === undefined) return invoke();
   const spanId = newSpanId();
   const startTime = new Date().toISOString();
   const child: SpanContext = { traceId: ctx.traceId, spanId };
@@ -302,18 +310,196 @@ export async function withSpan<T>(
       spanId,
       parentSpanId: ctx.spanId,
       name,
-      service: options.op ?? "server",
+      service: op ?? "server",
       startTime,
       endTime: new Date().toISOString(),
       status,
     });
+
+  let result: T;
   try {
-    // Run within the child context so nested sub-spans parent to this one.
-    const result = await requestContext.run(child, fn);
-    report("ok");
-    return result;
+    result = requestContext.run(child, invoke);
   } catch (error) {
     report("error");
     throw error;
+  }
+  const maybeThenable = result as unknown as { then?: unknown } | null;
+  if (maybeThenable !== null && typeof maybeThenable?.then === "function") {
+    return (result as unknown as Promise<unknown>).then(
+      (value) => {
+        report("ok");
+        return value;
+      },
+      (error: unknown) => {
+        report("error");
+        throw error;
+      },
+    ) as unknown as T;
+  }
+  report("ok");
+  return result;
+}
+
+// ── Automatic instrumentation ────────────────────────────────────────────────
+
+export interface InstrumentOptions {
+  /** Span category for the waterfall, e.g. "db", "cache", "http". */
+  op?: string;
+  /** Build a span name from the method + call args (default: the method name). */
+  name?: (method: string, args: unknown[]) => string;
+}
+
+/**
+ * Wraps the named methods of an object (or prototype) so every call becomes a
+ * sub-span automatically — point it at a DB client, cache, or util module once
+ * and all calls are traced without per-call code. Mutates and returns `target`.
+ *
+ *   octri.instrument(pool, ["query"], { op: "db" });
+ *   octri.instrument(cache, ["get", "set"], { op: "cache" });
+ */
+export function instrument<T extends object>(
+  target: T,
+  methods: string[],
+  options: InstrumentOptions = {},
+): T {
+  const record = target as Record<string, unknown>;
+  const nameFor = options.name ?? ((method: string): string => method);
+  for (const method of methods) {
+    const original = record[method];
+    if (typeof original !== "function") continue;
+    const fn = original as (...args: unknown[]) => unknown;
+    record[method] = function instrumented(this: unknown, ...args: unknown[]): unknown {
+      return runSpan(nameFor(method, args), options.op, () => fn.apply(this, args));
+    };
+  }
+  return target;
+}
+
+/** Wraps a standalone function so each call becomes a sub-span. */
+export function instrumentFunction<A extends unknown[], R>(
+  fn: (...args: A) => R,
+  options: { name?: string; op?: string } = {},
+): (...args: A) => R {
+  const label = options.name ?? (fn.name !== "" ? fn.name : "fn");
+  return (...args: A): R => runSpan(label, options.op, () => fn(...args));
+}
+
+export interface AutoInstrumentOptions {
+  /** Instrument the global `fetch` (outbound HTTP). Default true. */
+  fetch?: boolean;
+  /** Best-effort instrument popular DB/cache drivers if installed. Default true. */
+  db?: boolean;
+}
+
+/**
+ * Turns on zero-config tracing for common I/O: wraps the global `fetch` so every
+ * outbound HTTP call is a span, and best-effort instruments popular DB/cache
+ * drivers (pg, mysql2, ioredis) when they're installed. Call once after init().
+ * For your own DB client or util modules, use {@link instrument}.
+ */
+export function autoInstrument(options: AutoInstrumentOptions = {}): void {
+  if (options.fetch !== false) patchFetch();
+  if (options.db !== false) {
+    patchPg();
+    patchMysql2();
+    patchIoredis();
+  }
+}
+
+let fetchPatched = false;
+
+function patchFetch(): void {
+  const g = globalThis as unknown as { fetch?: (...args: unknown[]) => Promise<unknown> };
+  const original = g.fetch;
+  if (fetchPatched || typeof original !== "function") return;
+  fetchPatched = true;
+  g.fetch = function patchedFetch(this: unknown, ...args: unknown[]): Promise<unknown> {
+    // Never trace calls to the monitoring backend itself — that's our own span /
+    // error reporting, and tracing it would recurse forever.
+    if (config !== null && fetchUrl(args).startsWith(config.url)) {
+      return original.apply(this, args);
+    }
+    return runSpan(fetchSpanName(args), "http", () => original.apply(this, args));
+  } as typeof g.fetch;
+}
+
+function fetchUrl(args: unknown[]): string {
+  const input = args[0];
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  if (input !== null && typeof input === "object" && "url" in input) {
+    return String((input as { url: unknown }).url);
+  }
+  return "";
+}
+
+function fetchSpanName(args: unknown[]): string {
+  const url = fetchUrl(args);
+  const init = args[1] as { method?: string } | undefined;
+  const method = (init?.method ?? "GET").toUpperCase();
+  try {
+    const parsed = new URL(url);
+    return `${method} ${parsed.host}${parsed.pathname}`;
+  } catch {
+    return `${method} ${url}`.trim();
+  }
+}
+
+// `require` is available in this package's CommonJS output; resolve optional
+// peer drivers without making them dependencies.
+declare const require: (id: string) => unknown;
+
+function tryRequire(id: string): Record<string, unknown> | null {
+  try {
+    return require(id) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function firstWords(text: string, count: number): string {
+  return text.trim().split(/\s+/).slice(0, count).join(" ");
+}
+
+function sqlName(args: unknown[]): string {
+  const query = args[0];
+  const text =
+    typeof query === "string"
+      ? query
+      : query !== null && typeof query === "object" && "text" in query
+        ? String((query as { text: unknown }).text)
+        : "query";
+  return firstWords(text, 6);
+}
+
+function patchProto(mod: Record<string, unknown> | null, classNames: string[], methods: string[], op: string, name?: (m: string, a: unknown[]) => string): void {
+  if (mod === null) return;
+  for (const className of classNames) {
+    const cls = mod[className] as { prototype?: object } | undefined;
+    if (cls?.prototype !== undefined) {
+      instrument(cls.prototype, methods, name !== undefined ? { op, name } : { op });
+    }
+  }
+}
+
+function patchPg(): void {
+  patchProto(tryRequire("pg"), ["Client", "Pool"], ["query"], "db", (_m, args) => sqlName(args));
+}
+
+function patchMysql2(): void {
+  patchProto(tryRequire("mysql2"), ["Connection", "Pool"], ["query", "execute"], "db", (_m, args) => sqlName(args));
+}
+
+function patchIoredis(): void {
+  const mod = tryRequire("ioredis");
+  const cls = (mod?.default ?? mod?.Redis ?? mod) as { prototype?: object } | undefined;
+  if (cls?.prototype !== undefined) {
+    instrument(cls.prototype, ["sendCommand"], {
+      op: "cache",
+      name: (_m, args) => {
+        const cmd = args[0] as { name?: unknown } | undefined;
+        return `redis ${typeof cmd?.name === "string" ? cmd.name : "command"}`;
+      },
+    });
   }
 }
