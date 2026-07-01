@@ -201,7 +201,7 @@ export interface SpanInput {
 export function captureSpan(span: SpanInput): void {
   if (config === null) return;
   const cfg = config;
-  const body: Record<string, unknown> = { service: "server", ...span };
+  const body: Record<string, unknown> = { service: "server", environment: cfg.environment, ...span };
   void fetch(`${cfg.url}/traces`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${cfg.token}` },
