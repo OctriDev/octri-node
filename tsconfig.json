@@ -1,16 +1,18 @@
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
+    // Emit CommonJS (published lib with require+import exports) — override the
+    // base's NodeNext so existing extensionless relative imports keep resolving.
     "module": "CommonJS",
     "moduleResolution": "Node",
     "lib": ["ES2022", "DOM"],
-    "declaration": true,
     "outDir": "./dist",
     "rootDir": "./src",
-    "strict": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true
+    // Published SDK: inherits strict:true and full null-safety from the base.
+    // These two flags are relaxed because the existing code predates them; tighten
+    // incrementally rather than blanket strict:false.
+    "exactOptionalPropertyTypes": false,
+    "noUncheckedIndexedAccess": false
   },
   "include": ["src"]
 }
