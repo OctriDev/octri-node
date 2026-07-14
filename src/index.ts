@@ -13,8 +13,8 @@ import { fileURLToPath } from "node:url";
 export interface OctriConfig {
   /** Monitoring base URL, e.g. https://monitoring.example.com. */
   url: string;
-  /** Ingest token for your project (the same one your generated SDK uses). */
-  token: string;
+  /** Project ingest token. Omit only for an open self-hosted endpoint. */
+  token?: string;
   /** Project environment / id (the dashboard project id). */
   environment: string;
   /** Optional release identifier reported with each error. */
@@ -23,12 +23,65 @@ export interface OctriConfig {
 
 let config: OctriConfig | null = null;
 
+const REQUEST_TIMEOUT_MS = 5_000;
+const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
+
 /** Configures the reporter. Call once at startup before mounting the middleware. */
 export function init(cfg: OctriConfig): void {
   config = { ...cfg, url: cfg.url.replace(/\/$/, "") };
 }
 
+function postJson(
+  cfg: OctriConfig,
+  path: "/ingest" | "/traces",
+  payload: Record<string, unknown>,
+  idempotencyKey: string,
+): void {
+  try {
+    if (!isSafeIdempotencyKey(idempotencyKey)) return;
+    if (cfg.token !== undefined && cfg.token !== "" && !isSafeHeaderValue(cfg.token)) return;
+    const body = JSON.stringify(payload);
+    void fetch(`${cfg.url}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": idempotencyKey,
+        ...(cfg.token !== undefined && cfg.token !== ""
+          ? { authorization: `Bearer ${cfg.token}` }
+          : {}),
+      },
+      body,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }).catch(() => {
+      // Monitoring must never affect the application.
+    });
+  } catch {
+    // Circular/non-serializable custom context is dropped, never re-thrown.
+  }
+}
+
 const randomHex = (bytes: number): string => randomBytes(bytes).toString("hex");
+
+function isSafeHeaderValue(value: string): boolean {
+  return value !== "" && !value.includes("\r") && !value.includes("\n");
+}
+
+function isSafeIdempotencyKey(value: string): boolean {
+  return isSafeHeaderValue(value) && Buffer.byteLength(value, "utf8") <= MAX_IDEMPOTENCY_KEY_LENGTH;
+}
+
+function resolveEventId(value: unknown): string {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  return isSafeIdempotencyKey(candidate) ? candidate : randomHex(16);
+}
+
+function allZeros(value: string): boolean {
+  return /^0+$/.test(value);
+}
+
+function isNonBlank(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
 
 /** A fresh 64-bit span id (16 hex chars), for a span this service produces. */
 export function newSpanId(): string {
@@ -48,8 +101,10 @@ const TRACEPARENT_RE = /^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/i;
 /** Reads the trace from a `traceparent` header, or starts a fresh trace. */
 export function traceFromHeader(traceparent: string | string[] | undefined): TraceContext {
   const value = Array.isArray(traceparent) ? traceparent[0] : traceparent;
-  const match = value != null ? TRACEPARENT_RE.exec(value) : null;
-  if (match) return { traceId: match[1], parentSpanId: match[2] };
+  const match = value != null ? TRACEPARENT_RE.exec(value.trim()) : null;
+  if (match && !allZeros(match[1]) && !allZeros(match[2])) {
+    return { traceId: match[1].toLowerCase(), parentSpanId: match[2].toLowerCase() };
+  }
   return { traceId: randomHex(16) };
 }
 
@@ -140,6 +195,86 @@ export interface CaptureOptions {
   level?: "error" | "fatal" | "warning";
 }
 
+export type EventLevel = "debug" | "info" | "warning" | "error" | "fatal";
+
+export interface Breadcrumb {
+  timestamp?: string;
+  type?: string;
+  category?: string;
+  level?: EventLevel;
+  message?: string;
+  data?: Record<string, unknown>;
+}
+
+/** Optional enrichment for a standalone monitoring event. */
+export interface EventOptions {
+  /** Defaults to the current time. */
+  timestamp?: string | Date;
+  /** Defaults to `info`. */
+  level?: EventLevel;
+  operationId?: string;
+  method?: string;
+  path?: string;
+  statusCode?: number;
+  latencyMs?: number;
+  attempt?: number;
+  requestId?: string;
+  user?: Record<string, unknown>;
+  tags?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  breadcrumbs?: Breadcrumb[];
+  fingerprint?: string;
+  trace?: TraceContext;
+  spanId?: string;
+  /** Supply an id to make retried delivery idempotent. A random id is used otherwise. */
+  eventId?: string;
+}
+
+/**
+ * Logs an application event without a generated Octri client SDK.
+ *
+ * Delivery is fire-and-forget and best-effort: monitoring is never allowed to
+ * affect the host application. Configure the client once with `init()` first.
+ */
+export function captureEvent(message: string, options: EventOptions = {}): void {
+  if (config === null) return;
+  const cfg = config;
+  try {
+    const timestamp = options.timestamp instanceof Date
+      ? (Number.isNaN(options.timestamp.getTime())
+          ? new Date().toISOString()
+          : options.timestamp.toISOString())
+      : (options.timestamp ?? new Date().toISOString());
+    const eventId = resolveEventId(options.eventId);
+    const payload: Record<string, unknown> = {
+      eventId,
+      timestamp,
+      level: options.level ?? "info",
+      message,
+      operationId: options.operationId,
+      method: options.method,
+      path: options.path,
+      statusCode: options.statusCode,
+      latencyMs: options.latencyMs,
+      attempt: options.attempt,
+      requestId: options.requestId,
+      environment: cfg.environment,
+      release: cfg.release,
+      user: options.user,
+      tags: { "octri.origin": "standalone", ...(options.tags ?? {}) },
+      context: options.context,
+      breadcrumbs: options.breadcrumbs,
+      fingerprint: options.fingerprint,
+      traceId: options.trace?.traceId,
+      spanId: options.spanId,
+    };
+
+    postJson(cfg, "/ingest", payload, eventId);
+  } catch {
+    // Invalid caller data must not affect the host application.
+  }
+}
+
 /**
  * Reports an error to the monitoring project (fire-and-forget). Tagged
  * `octri.origin=server` and stamped with the request's `traceId`, so it links to
@@ -148,32 +283,31 @@ export interface CaptureOptions {
 export function captureError(error: unknown, options: CaptureOptions = {}): void {
   if (config === null) return;
   const cfg = config;
-  const err = error instanceof Error ? error : new Error(String(error));
-  const trace = options.trace ?? { traceId: randomHex(16) };
+  try {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const trace = options.trace ?? { traceId: randomHex(16) };
+    const eventId = randomHex(16);
 
-  const payload: Record<string, unknown> = {
-    eventId: randomHex(16),
-    timestamp: new Date().toISOString(),
-    level: options.level ?? "error",
-    method: options.method,
-    path: options.path,
-    operationId: options.operationId,
-    statusCode: options.statusCode,
-    environment: cfg.environment,
-    release: cfg.release,
-    traceId: trace.traceId,
-    spanId: randomHex(8),
-    tags: { "octri.origin": "server" },
-    error: { name: err.name, message: err.message, stack: err.stack, frames: buildFrames(err.stack) },
-  };
+    const payload: Record<string, unknown> = {
+      eventId,
+      timestamp: new Date().toISOString(),
+      level: options.level ?? "error",
+      method: options.method,
+      path: options.path,
+      operationId: options.operationId,
+      statusCode: options.statusCode,
+      environment: cfg.environment,
+      release: cfg.release,
+      traceId: trace.traceId,
+      spanId: randomHex(8),
+      tags: { "octri.origin": "server" },
+      error: { name: err.name, message: err.message, stack: err.stack, frames: buildFrames(err.stack) },
+    };
 
-  void fetch(`${cfg.url}/ingest`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${cfg.token}` },
-    body: JSON.stringify(payload),
-  }).catch(() => {
-    // A logging failure must never mask the originating error.
-  });
+    postJson(cfg, "/ingest", payload, eventId);
+  } catch {
+    // Invalid error-like values must not affect the host application.
+  }
 }
 
 // ── Spans (request waterfall) ────────────────────────────────────────────────
@@ -201,14 +335,23 @@ export interface SpanInput {
 export function captureSpan(span: SpanInput): void {
   if (config === null) return;
   const cfg = config;
-  const body: Record<string, unknown> = { service: "server", environment: cfg.environment, ...span };
-  void fetch(`${cfg.url}/traces`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${cfg.token}` },
-    body: JSON.stringify(body),
-  }).catch(() => {
-    // Span reporting must never affect the request.
-  });
+  try {
+    if (
+      !isNonBlank(span.traceId) ||
+      !isNonBlank(span.spanId) ||
+      !isNonBlank(span.name) ||
+      !isNonBlank(span.startTime) ||
+      Number.isNaN(Date.parse(span.startTime)) ||
+      (span.endTime !== undefined &&
+        (!isNonBlank(span.endTime) || Number.isNaN(Date.parse(span.endTime)))) ||
+      (span.traceId.length === 32 && allZeros(span.traceId)) ||
+      (span.spanId.length === 16 && allZeros(span.spanId))
+    ) return;
+    const body: Record<string, unknown> = { service: "server", environment: cfg.environment, ...span };
+    postJson(cfg, "/traces", body, `${span.traceId}:${span.spanId}`);
+  } catch {
+    // Invalid caller data must not affect the host application.
+  }
 }
 
 // ── Sub-spans (where time goes inside a request) ─────────────────────────────

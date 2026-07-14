@@ -13,11 +13,33 @@ import { init } from "@octri/node";
 
 init({
   url: "https://monitoring.example.com", // your monitoring base URL
-  token: process.env.OCTRI_TOKEN!,        // your project ingest token
+  token: process.env.OCTRI_TOKEN,         // your project ingest token
   environment: "<your project id>",       // the dashboard project id
   release: process.env.GIT_SHA,           // optional
 });
 ```
+
+Hosted users can copy the project-scoped URL, token, and environment from the
+Monitoring connection settings (or its API). Omit `token` only when pointing at
+an open self-hosted ingest endpoint. Every request carries an idempotency key.
+
+## Standalone events
+
+The package can be used directly; a generated Octri API SDK is not required.
+
+```ts
+import { captureEvent } from "@octri/node";
+
+captureEvent("checkout.completed", {
+  level: "info",
+  user: { id: customer.id },
+  tags: { region: "eu-west", plan: "growth" },
+  context: { orderId: order.id, total: order.total },
+});
+```
+
+Delivery is asynchronous and best-effort. Supplying `eventId` makes a retried
+delivery idempotent.
 
 ### Express
 
