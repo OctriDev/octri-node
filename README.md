@@ -1,10 +1,26 @@
 # @octri/node
 
-Server-side error monitoring for **Node** backends. Add it to your live API and
-it reports backend errors to your Octri monitoring project — with original-source
-context per stack frame — and **links each one to the client SDK error for the
-same request** via the W3C `traceparent` header. In the dashboard you then see
+**Error and performance monitoring for Node backends.** Report errors out of
+Express or Fastify with original-source context per stack frame, time every
+request into a waterfall, and join each server error to the client SDK error for
+the same request through the W3C `traceparent` header. In the dashboard you see
 the full client → server stack under one trace.
+
+Octri turns an OpenAPI spec into a documentation site, client SDKs for ten
+languages, an MCP server your AI assistant can call, and monitoring for the
+API behind them. This package is the Node monitoring runtime, and it works on
+its own: a generated Octri API SDK is not required. See
+[octri.dev/monitoring](https://octri.dev/monitoring).
+
+Siblings: [Python](https://github.com/octridev/octri-python),
+[Go](https://github.com/octridev/octri-go),
+[Ruby](https://github.com/octridev/octri-ruby), and six more below.
+
+## Install
+
+```bash
+npm install @octri/node
+```
 
 ## Setup
 
@@ -115,3 +131,33 @@ them as one trace — the client call that failed and the server frame that thre
 
 Source context is read from the running process, so it shows your original code
 when the source is deployed alongside the server (it always is for a Node app).
+
+---
+
+## The rest of Octri
+
+| Product | What it does |
+|---|---|
+| [API Studio](https://octri.dev/api-studio) | Your OpenAPI spec becomes a hosted documentation site with a live request playground, editable page by page. |
+| [SDK Studio](https://octri.dev/sdk-studio) | The same spec becomes client libraries for ten languages, versioned and released together. |
+| [MCP](https://octri.dev/mcp) | Your endpoints and docs become tools an AI assistant can call, generated from the same spec. |
+| [Monitoring](https://octri.dev/monitoring) | Errors, traces, uptime and releases for the API, joined to the SDK calls that reached it. |
+
+### Monitoring runtimes
+
+[Node](https://github.com/octridev/octri-node) ·
+[Python](https://github.com/octridev/octri-python) ·
+[Go](https://github.com/octridev/octri-go) ·
+[Ruby](https://github.com/octridev/octri-ruby) ·
+[Rust](https://github.com/octridev/octri-rust) ·
+[PHP](https://github.com/octridev/octri-php) ·
+[Java](https://github.com/octridev/octri-java) ·
+[Kotlin](https://github.com/octridev/octri-kotlin) ·
+[Swift](https://github.com/octridev/octri-swift) ·
+[Dart](https://github.com/octridev/octri-dart)
+
+[Documentation](https://docs.octri.dev/docs) ·
+[Pricing](https://octri.dev/pricing) ·
+[Changelog](https://docs.octri.dev/changelog)
+
+MIT licensed.
