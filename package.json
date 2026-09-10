@@ -1,6 +1,6 @@
 {
   "name": "@octri/node",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Server-side error monitoring for Node backends (Express + Fastify). Reports backend errors to your Octri monitoring project and links them to client SDK errors via W3C trace context.",
   "keywords": [
     "octri",
