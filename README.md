@@ -104,7 +104,7 @@ instrument(cache, ["get", "set"], { op: "cache" });
 ```
 
 Every call to an instrumented method (and every `fetch`) becomes a sub-span under
-the current request — no per-call code. Calls to your monitoring backend are
+the current request, with no per-call code. Calls to your monitoring backend are
 never traced (no feedback loop).
 
 ### Manual
@@ -127,12 +127,45 @@ Your generated client SDK sends a `traceparent: 00-<traceId>-<spanId>-01` header
 with every request. This package reads it on the server, and when a handler
 throws it reports the error stamped with the **same `traceId`** (tagged
 `octri.origin=server`). The dashboard groups both events by `traceId` and shows
-them as one trace — the client call that failed and the server frame that threw.
+them as one trace: the client call that failed and the server frame that threw.
 
 Source context is read from the running process, so it shows your original code
 when the source is deployed alongside the server (it always is for a Node app).
 
 ---
+
+## What gets redacted
+
+Payloads are scrubbed on the way out, so a credential that ended up in a log
+line or a context object never reaches the dashboard.
+
+Any key whose name looks like a credential (`password`, `secret`, `token`,
+`apiKey`, `authorization`, `cookie`, `ssn` and the rest of the usual list) has
+its value replaced with `[redacted]`, at any depth. Matching ignores case and
+separators, so `api_key`, `apiKey` and `X-API-KEY` are all the same key.
+
+Free text is swept too: the message, an error message and its stack, and
+anything else you send as a string. Bearer tokens, JWTs, card numbers and email
+addresses come out as `[redacted]`. A card number has to pass the Luhn check
+first, so an order number or a timestamp survives.
+
+`user` is the exception. It is the field you fill with an identity on purpose,
+so `user.email` is reported exactly as you set it. Credential-shaped keys inside
+it are still redacted.
+
+Add your own key names:
+
+```ts
+addScrubFields("accountNumber", "otp");
+```
+
+Or take the payload yourself, and return `null` to drop the event:
+
+```ts
+setBeforeSend((payload) => (payload.path === "/health" ? null : payload));
+```
+
+Redaction runs after your hook, so a hook cannot leak a credential by accident.
 
 ## The rest of Octri
 

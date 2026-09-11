@@ -116,11 +116,14 @@ test("captureSpan suppresses invalid required fields and reporting stays best-ef
     });
     assert.equal(calls.length, 0);
 
+    // A context that will not serialize is dropped rather than thrown. A cycle
+    // does serialize (the scrubber marks it), so that event is still reported.
     const circular = {};
     circular.self = circular;
     assert.doesNotThrow(() => sdk.captureEvent("circular", { context: circular }));
+    assert.doesNotThrow(() => sdk.captureEvent("bigint", { context: { size: 1n } }));
     assert.doesNotThrow(() => sdk.captureError(Object.create(null)));
-    assert.equal(calls.length, 0);
+    assert.equal(calls.length, 1, "only the cyclic context is reportable");
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -1,4 +1,4 @@
-import { captureError, captureSpan, newSpanId, runWithSpanContext, traceFromHeader } from "./index";
+import { captureError, captureSpan, newSpanId, requestPath, runWithSpanContext, traceFromHeader } from "./index";
 
 // Minimal structural types so the package needn't depend on Express.
 interface ReqLike {
@@ -46,7 +46,7 @@ export function octriMiddleware() {
           traceId: trace.traceId,
           spanId,
           parentSpanId: trace.parentSpanId,
-          name: `${req.method ?? "GET"} ${req.originalUrl ?? req.url ?? ""}`.trim(),
+          name: `${req.method ?? "GET"} ${requestPath(req.originalUrl ?? req.url)}`.trim(),
           service: "server",
           startTime,
           endTime: new Date().toISOString(),
@@ -69,7 +69,7 @@ export function octriErrorHandler() {
       captureError(err, {
         trace: traceFromHeader(req.headers.traceparent),
         method: req.method,
-        path: req.originalUrl ?? req.url,
+        path: requestPath(req.originalUrl ?? req.url),
         statusCode: typeof res.statusCode === "number" && res.statusCode >= 400 ? res.statusCode : 500,
       });
     } catch {

@@ -2,6 +2,7 @@ import {
   captureError,
   captureSpan,
   newSpanId,
+  requestPath,
   runWithSpanContext,
   traceFromHeader,
   type TraceContext,
@@ -52,7 +53,7 @@ export function octriFastify(fastify: FastifyLike, _opts: unknown, done: () => v
       // Never let monitoring break the request.
     }
     // Continuing inside the span context lets route handlers open sub-spans
-    // (startSpan / withSpan) that nest under this request's server span — the
+    // (startSpan / withSpan) that nest under this request's server span. The
     // async context propagates through Fastify's lifecycle.
     if (context !== null) runWithSpanContext(context, hookDone);
     else hookDone();
@@ -67,7 +68,7 @@ export function octriFastify(fastify: FastifyLike, _opts: unknown, done: () => v
           traceId: span.trace.traceId,
           spanId: span.spanId,
           parentSpanId: span.trace.parentSpanId,
-          name: `${request.method ?? ""} ${request.url ?? ""}`.trim(),
+          name: `${request.method ?? ""} ${requestPath(request.url)}`.trim(),
           service: "server",
           startTime: span.start,
           endTime: new Date().toISOString(),
@@ -85,7 +86,7 @@ export function octriFastify(fastify: FastifyLike, _opts: unknown, done: () => v
       captureError(error, {
         trace: traceFromHeader(request.headers?.traceparent),
         method: request.method,
-        path: request.url,
+        path: requestPath(request.url),
         statusCode: typeof reply.statusCode === "number" ? reply.statusCode : 500,
       });
     } catch {
