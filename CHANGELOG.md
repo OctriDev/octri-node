@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0
+
+- Direct identifiers are now redacted by key, the same way credentials are:
+  `email`, `phone`, `address`, first/last/full name, `username`, `userAgent`,
+  passport, tax and national ids, dates of birth, postal codes, coordinates
+  and `ipAddress`, wherever the word appears in a key (`billingEmail`,
+  `customer_phone_number`). This matches what every generated SDK already did.
+- `user.email` is therefore `[redacted]` before sending. `user.id` still
+  survives; it is the identity the dashboard counts affected users by.
+
 ## 1.1.0
 
 - Payloads are now scrubbed before they are sent. Values under keys that name a

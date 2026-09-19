@@ -127,14 +127,35 @@ test("an error message and its stack are scrubbed", async () => {
 
 // ─── The user field ───────────────────────────────────────────────────────────
 
-test("user identity survives, user credentials do not", async () => {
+// The identity the dashboard keys on is `id`, which survives. Direct
+// identifiers under the user (email, phone, names) are redacted like they are
+// in every generated SDK; before 1.2.0 the email reached ingest and was only
+// masked there.
+test("user id survives, user credentials and identifiers do not", async () => {
   const payload = await capture("profile update failed", {
-    user: { id: "u_1", email: "ada@example.com", sessionToken: "st_1" },
+    user: { id: "u_1", email: "ada@example.com", sessionToken: "st_1", customerPhone: "+1 555 0100" },
   });
 
-  assert.equal(payload.user.email, "ada@example.com");
   assert.equal(payload.user.id, "u_1");
+  assert.equal(payload.user.email, "[redacted]");
   assert.equal(payload.user.sessionToken, "[redacted]");
+  assert.equal(payload.user.customerPhone, "[redacted]");
+});
+
+test("identifier words inside longer keys are redacted, short ambiguous ones are not on the list", async () => {
+  const payload = await capture("checkout failed", {
+    context: {
+      billingAddress: { line1: "1 High St" },
+      shipping_first_name: "Ada",
+      avatarUrl: "https://cdn.example.com/a.png",
+      queryTimeMs: 12,
+    },
+  });
+
+  assert.equal(payload.context.billingAddress, "[redacted]");
+  assert.equal(payload.context.shipping_first_name, "[redacted]");
+  assert.equal(payload.context.avatarUrl, "https://cdn.example.com/a.png");
+  assert.equal(payload.context.queryTimeMs, 12);
 });
 
 // ─── beforeSend ───────────────────────────────────────────────────────────────
